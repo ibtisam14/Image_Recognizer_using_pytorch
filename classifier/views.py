@@ -6,11 +6,12 @@ from django.views.decorators.csrf import csrf_exempt
 from .forms import ImageUploadForm
 from .models import UploadedImage
 import urllib
+import torch.nn as nn
 
 # ✅ Device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# ✅ ResNet model
+# ✅ FIRST MODEL (ResNet50 – object detection)
 model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
 model = model.to(device)
 model.eval()
@@ -32,6 +33,24 @@ imagenet_classes = urllib.request.urlopen(url).read().decode("utf-8").split("\n"
 
 ALLOWED_EXT = ['jpg', 'jpeg', 'png', 'webp']
 
+# -----------------------------------------------------------
+# ✅ SECOND MODEL (Waste / Garbage Classification)
+# -----------------------------------------------------------
+
+MATERIAL_CLASSES = ['cardboard', 'glass', 'metal', 'paper', 'plastic', 'trash']
+
+# ✅ Load MobileNetV2
+waste_model = models.mobilenet_v2(weights=None)
+waste_model.classifier[1] = nn.Linear(1280, len(MATERIAL_CLASSES))
+
+# ✅ Load your custom model weights
+waste_model.load_state_dict(
+    torch.load("classifier/waste_model.pth", map_location=device)
+)
+
+waste_model = waste_model.to(device)
+waste_model.eval()
+
 
 @csrf_exempt
 def classify_image(request):
@@ -44,12 +63,10 @@ def classify_image(request):
         if not form.is_valid():
             return JsonResponse({"error": "Invalid form data"}, status=400)
 
-        # ✅ File extension checking
         ext = request.FILES['image'].name.split('.')[-1].lower()
         if ext not in ALLOWED_EXT:
             return JsonResponse({"error": "Allowed file types: jpg, jpeg, png, webp"}, status=400)
 
-        # ✅ Save image
         uploaded = form.save()
         image_path = uploaded.image.path
         image_url = uploaded.image.url
@@ -60,19 +77,16 @@ def classify_image(request):
         except UnidentifiedImageError:
             return JsonResponse({"error": "Invalid or corrupted image"}, status=400)
 
-        # ✅ Preprocess
         img_tensor = transform(image).unsqueeze(0).to(device)
 
-        # ✅ Inference
+        # ✅ ResNet (object name)
         with torch.no_grad():
             outputs = model(img_tensor)
 
-            # Top 1
             _, idx1 = outputs.max(1)
             label1 = imagenet_classes[idx1.item()]
             prob1 = torch.nn.functional.softmax(outputs, dim=1)[0][idx1].item()
 
-            # Top 5
             probs = torch.nn.functional.softmax(outputs, dim=1)[0]
             top5_prob, top5_idx = torch.topk(probs, 5)
 
@@ -83,15 +97,27 @@ def classify_image(request):
                     "confidence": float(top5_prob[i].item())
                 })
 
-        # ✅ Save label in DB
+        # ✅ SECOND MODEL (waste classification)
+        with torch.no_grad():
+            waste_out = waste_model(img_tensor)
+            _, w_idx = waste_out.max(1)
+
+            material_label = MATERIAL_CLASSES[w_idx.item()]
+            material_conf = torch.nn.functional.softmax(waste_out, dim=1)[0][w_idx].item()
+
+        # ✅ Save to DB
         uploaded.predicted_label = label1
         uploaded.save()
 
         return JsonResponse({
             "status": "success",
-            "top1_prediction": {
+            "object_prediction": {
                 "label": label1,
                 "confidence": float(prob1)
+            },
+            "material_prediction": {
+                "label": material_label,
+                "confidence": float(material_conf)
             },
             "top5_predictions": top5,
             "image_url": image_url,
