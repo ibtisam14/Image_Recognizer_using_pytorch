@@ -33,23 +33,27 @@ imagenet_classes = urllib.request.urlopen(url).read().decode("utf-8").split("\n"
 
 ALLOWED_EXT = ['jpg', 'jpeg', 'png', 'webp']
 
-# -----------------------------------------------------------
-# ✅ SECOND MODEL (Waste / Garbage Classification)
-# -----------------------------------------------------------
 
-MATERIAL_CLASSES = ['cardboard', 'glass', 'metal', 'paper', 'plastic', 'trash']
+# ✅ SIMPLE WASTE CLASSIFIER (No model required)
+def simple_waste_classifier(label):
+    label = label.lower()
 
-# ✅ Load MobileNetV2
-waste_model = models.mobilenet_v2(weights=None)
-waste_model.classifier[1] = nn.Linear(1280, len(MATERIAL_CLASSES))
+    if any(x in label for x in ["bottle", "plastic", "cup", "container"]):
+        return "plastic", 0.90
 
-# ✅ Load your custom model weights
-waste_model.load_state_dict(
-    torch.load("classifier/waste_model.pth", map_location=device)
-)
+    if any(x in label for x in ["paper", "book", "document", "newspaper"]):
+        return "paper", 0.85
 
-waste_model = waste_model.to(device)
-waste_model.eval()
+    if any(x in label for x in ["can", "metal", "aluminum", "tin"]):
+        return "metal", 0.88
+
+    if any(x in label for x in ["glass", "jar", "wine"]):
+        return "glass", 0.92
+
+    if any(x in label for x in ["box", "cardboard", "carton"]):
+        return "cardboard", 0.87
+
+    return "trash", 0.60
 
 
 @csrf_exempt
@@ -97,13 +101,8 @@ def classify_image(request):
                     "confidence": float(top5_prob[i].item())
                 })
 
-        # ✅ SECOND MODEL (waste classification)
-        with torch.no_grad():
-            waste_out = waste_model(img_tensor)
-            _, w_idx = waste_out.max(1)
-
-            material_label = MATERIAL_CLASSES[w_idx.item()]
-            material_conf = torch.nn.functional.softmax(waste_out, dim=1)[0][w_idx].item()
+        # ✅ SIMPLE SECOND MODEL
+        material_label, material_conf = simple_waste_classifier(label1)
 
         # ✅ Save to DB
         uploaded.predicted_label = label1
