@@ -8,15 +8,15 @@ from .models import UploadedImage
 import urllib
 import torch.nn as nn
 
-# ✅ Device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# ✅ FIRST MODEL (ResNet50 – general classification)
+resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+resnet.eval()   # CPU only
 
-# ✅ FIRST MODEL (ResNet50 – object detection)
-model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-model = model.to(device)
-model.eval()
+# ✅ THIRD MODEL (MobileNetV2 – general classification)
+mobilenet = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
+mobilenet.eval()  # CPU only
 
-# ✅ Preprocessing
+# ✅ Preprocessing (same for ResNet + MobileNetV2)
 transform = transforms.Compose([
     transforms.Resize(256),
     transforms.CenterCrop(224),
@@ -34,7 +34,7 @@ imagenet_classes = urllib.request.urlopen(url).read().decode("utf-8").split("\n"
 ALLOWED_EXT = ['jpg', 'jpeg', 'png', 'webp']
 
 
-# ✅ SIMPLE WASTE CLASSIFIER (No model required)
+# ✅ SIMPLE WASTE CLASSIFIER (keyword-based)
 def simple_waste_classifier(label):
     label = label.lower()
 
@@ -69,7 +69,10 @@ def classify_image(request):
 
         ext = request.FILES['image'].name.split('.')[-1].lower()
         if ext not in ALLOWED_EXT:
-            return JsonResponse({"error": "Allowed file types: jpg, jpeg, png, webp"}, status=400)
+            return JsonResponse(
+                {"error": "Allowed file types: jpg, jpeg, png, webp"},
+                status=400
+            )
 
         uploaded = form.save()
         image_path = uploaded.image.path
@@ -81,47 +84,51 @@ def classify_image(request):
         except UnidentifiedImageError:
             return JsonResponse({"error": "Invalid or corrupted image"}, status=400)
 
-        img_tensor = transform(image).unsqueeze(0).to(device)
+        img_tensor = transform(image).unsqueeze(0)  # ✅ CPU only
 
-        # ✅ ResNet (object name)
+        # ✅ FIRST MODEL — ResNet50
         with torch.no_grad():
-            outputs = model(img_tensor)
+            resnet_out = resnet(img_tensor)
 
-            _, idx1 = outputs.max(1)
-            label1 = imagenet_classes[idx1.item()]
-            prob1 = torch.nn.functional.softmax(outputs, dim=1)[0][idx1].item()
+            _, idx1 = resnet_out.max(1)
+            resnet_label = imagenet_classes[idx1.item()]
+            resnet_conf = torch.nn.functional.softmax(resnet_out, dim=1)[0][idx1].item()
 
-            probs = torch.nn.functional.softmax(outputs, dim=1)[0]
-            top5_prob, top5_idx = torch.topk(probs, 5)
+        # ✅ SECOND MODEL — Keyword Waste Classifier
+        material_label, material_conf = simple_waste_classifier(resnet_label)
 
-            top5 = []
-            for i in range(5):
-                top5.append({
-                    "label": imagenet_classes[top5_idx[i].item()],
-                    "confidence": float(top5_prob[i].item())
-                })
+        # ✅ THIRD MODEL — MobileNetV2
+        with torch.no_grad():
+            mobile_out = mobilenet(img_tensor)
 
-        # ✅ SIMPLE SECOND MODEL
-        material_label, material_conf = simple_waste_classifier(label1)
+            _, idx3 = mobile_out.max(1)
+            mobile_label = imagenet_classes[idx3.item()]
+            mobile_conf = torch.nn.functional.softmax(mobile_out, dim=1)[0][idx3].item()
 
-        # ✅ Save to DB
-        uploaded.predicted_label = label1
+        # ✅ Save ResNet result in DB
+        uploaded.predicted_label = resnet_label
         uploaded.save()
 
+        # ✅ Final Response (NO GPU/CPU info)
         return JsonResponse({
             "status": "success",
-            "object_prediction": {
-                "label": label1,
-                "confidence": float(prob1)
+            "resnet_prediction": {
+                "label": resnet_label,
+                "confidence": float(resnet_conf)
             },
             "material_prediction": {
                 "label": material_label,
                 "confidence": float(material_conf)
             },
-            "top5_predictions": top5,
-            "image_url": image_url,
-            "device_used": "GPU" if torch.cuda.is_available() else "CPU"
+            "mobilenet_prediction": {
+                "label": mobile_label,
+                "confidence": float(mobile_conf)
+            },
+            "image_url": image_url
         })
 
     except Exception as e:
-        return JsonResponse({"error": "Unexpected error", "details": str(e)}, status=500)
+        return JsonResponse({
+            "error": "Unexpected error occurred",
+            "details": str(e)
+        }, status=500)
