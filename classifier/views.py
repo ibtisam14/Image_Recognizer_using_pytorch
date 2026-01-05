@@ -8,15 +8,12 @@ from .models import UploadedImage
 import urllib
 import torch.nn as nn
 
-# ✅ FIRST MODEL (ResNet50 – general classification)
 resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-resnet.eval()   # CPU only
+resnet.eval()  
 
-# ✅ THIRD MODEL (MobileNetV2 – general classification)
 mobilenet = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
-mobilenet.eval()  # CPU only
+mobilenet.eval() 
 
-# ✅ Preprocessing (same for ResNet + MobileNetV2)
 transform = transforms.Compose([
     transforms.Resize(256),
     transforms.CenterCrop(224),
@@ -27,14 +24,12 @@ transform = transforms.Compose([
     )
 ])
 
-# ✅ ImageNet labels
 url = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt"
 imagenet_classes = urllib.request.urlopen(url).read().decode("utf-8").split("\n")
 
 ALLOWED_EXT = ['jpg', 'jpeg', 'png', 'webp']
 
 
-# ✅ SIMPLE WASTE CLASSIFIER (keyword-based)
 def simple_waste_classifier(label):
     label = label.lower()
 
@@ -78,15 +73,13 @@ def classify_image(request):
         image_path = uploaded.image.path
         image_url = uploaded.image.url
 
-        # ✅ Load image safely
         try:
             image = Image.open(image_path).convert("RGB")
         except UnidentifiedImageError:
             return JsonResponse({"error": "Invalid or corrupted image"}, status=400)
 
-        img_tensor = transform(image).unsqueeze(0)  # ✅ CPU only
+        img_tensor = transform(image).unsqueeze(0)  
 
-        # ✅ FIRST MODEL — ResNet50
         with torch.no_grad():
             resnet_out = resnet(img_tensor)
 
@@ -94,10 +87,8 @@ def classify_image(request):
             resnet_label = imagenet_classes[idx1.item()]
             resnet_conf = torch.nn.functional.softmax(resnet_out, dim=1)[0][idx1].item()
 
-        # ✅ SECOND MODEL — Keyword Waste Classifier
         material_label, material_conf = simple_waste_classifier(resnet_label)
 
-        # ✅ THIRD MODEL — MobileNetV2
         with torch.no_grad():
             mobile_out = mobilenet(img_tensor)
 
@@ -105,11 +96,9 @@ def classify_image(request):
             mobile_label = imagenet_classes[idx3.item()]
             mobile_conf = torch.nn.functional.softmax(mobile_out, dim=1)[0][idx3].item()
 
-        # ✅ Save ResNet result in DB
         uploaded.predicted_label = resnet_label
         uploaded.save()
 
-        # ✅ Final Response (NO GPU/CPU info)
         return JsonResponse({
             "status": "success",
             "resnet_prediction": {
